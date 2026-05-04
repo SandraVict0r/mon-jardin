@@ -81,8 +81,12 @@ export default function App() {
   };
 
   const analyzeAndAdd = async () => {
-    if (!imageData) return;
+    // Validations gratuites avant d'appeler l'API
+    if (!imageData) { setLoadingMsg("❌ Aucune image sélectionnée"); setTimeout(() => setLoadingMsg(""), 5000); return; }
     if (!apiKey) { setShowKeyInput(true); return; }
+    if (!apiKey.startsWith("sk-ant-")) { setLoadingMsg("❌ Clé API invalide — elle doit commencer par sk-ant-"); setTimeout(() => setLoadingMsg(""), 10000); return; }
+    const base64Size = (imageData.length * 3) / 4 / 1024 / 1024;
+    if (base64Size > 4.5) { setLoadingMsg("❌ Image encore trop lourde (" + base64Size.toFixed(1) + "MB). Essaie une autre photo."); setTimeout(() => setLoadingMsg(""), 10000); return; }
     setLoading(true);
     setLoadingMsg("🔍 Identification de la plante…");
     const now = new Date();
@@ -99,7 +103,7 @@ Types de tâches possibles : arrosage, engrais, rempotage, taille, brumisation. 
         method: "POST",
         headers: { "Content-Type": "application/json", "x-api-key": apiKey, "anthropic-version": "2023-06-01", "anthropic-dangerous-direct-browser-access": "true" },
         body: JSON.stringify({
-          model: "claude-sonnet-4-6", max_tokens: 1000,
+          model: "claude-sonnet-4-6", max_tokens: 2048,
           messages: [{ role: "user", content: [
             { type: "image", source: { type: "base64", media_type: "image/jpeg", data: imageData } },
             { type: "text", text: prompt }
@@ -109,15 +113,18 @@ Types de tâches possibles : arrosage, engrais, rempotage, taille, brumisation. 
       const data = await res.json();
       if (data.error) throw new Error(data.error.message);
       const text = data.content?.find(b => b.type === "text")?.text || "";
-      const plantData = JSON.parse(text.replace(/```json|```/g, "").trim());
+      if (!text) throw new Error("Réponse vide — vérifie ta clé API");
+      const jsonMatch = text.match(/\{[\s\S]*\}/);
+      if (!jsonMatch) throw new Error("Réponse reçue mais JSON introuvable : " + text.slice(0, 80));
+      const plantData = JSON.parse(jsonMatch[0]);
       const newPlant = { id: Date.now(), ...plantData, photo: `data:image/jpeg;base64,${imageData}`, ajoutee: now.toISOString(), derniere_action: {} };
       setPlants(prev => [...prev, newPlant]);
       setSelectedPlant(newPlant);
       setView("plant");
       setPreview(null); setImageData(null);
     } catch (err) {
-      setLoadingMsg("❌ Erreur : " + err.message);
-      setTimeout(() => setLoadingMsg(""), 4000);
+      setLoadingMsg("❌ " + err.message + " — (les crédits ne sont débités que si l'API répond)");
+      setTimeout(() => setLoadingMsg(""), 10000);
     } finally { setLoading(false); }
   };
 
