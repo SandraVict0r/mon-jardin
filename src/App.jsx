@@ -298,7 +298,7 @@ Types de tâches possibles : arrosage, engrais, rempotage, taille, brumisation. 
               <div style={{ fontSize: 12, marginTop: 6, color: "#86a892" }}>Prenez la plante entière si possible</div>
             </div>}
         </div>
-        <input ref={fileRef} type="file" accept="image/*" capture="environment" onChange={handleFileChange} style={{ display: "none" }} />
+        <input ref={fileRef} type="file" accept="image/*" onChange={handleFileChange} style={{ display: "none" }} />
         {loadingMsg && <div style={{ background: "#f0faf3", border: "1px solid #6fba85", borderRadius: 12, padding: "12px 16px", marginBottom: 16, color: "#1a3a2a", fontSize: 14, textAlign: "center" }}>{loadingMsg}</div>}
         {preview && !loading && (
           <div>
