@@ -27,6 +27,9 @@ export default function App() {
   const [calYear, setCalYear] = useState(new Date().getFullYear());
   const [apiKey, setApiKey] = useState(() => localStorage.getItem("anthropic_key") || "");
   const [showKeyInput, setShowKeyInput] = useState(false);
+  const [editingPlant, setEditingPlant] = useState(null); // {id, field, value}
+  const [pendingPlant, setPendingPlant] = useState(null); // waiting for user confirmation
+  const [correction, setCorrection] = useState(""); // user correction input
   const fileRef = useRef();
 
   useEffect(() => {
@@ -130,10 +133,8 @@ Types de tâches possibles : arrosage, engrais, rempotage, taille, brumisation. 
       if (!jsonMatch) throw new Error("Réponse reçue mais JSON introuvable : " + text.slice(0, 80));
       const plantData = JSON.parse(jsonMatch[0]);
       const newPlant = { id: Date.now(), ...plantData, photo: preview, ajoutee: now.toISOString(), derniere_action: {} };
-      setPlants(prev => [...prev, newPlant]);
-      setSelectedPlant(newPlant);
-      setView("plant");
-      setPreview(null); setImageData(null);
+      setPendingPlant(newPlant);
+      setCorrection("");
     } catch (err) {
       setLoadingMsg("❌ " + err.message + " — (les crédits ne sont débités que si l'API répond)");
       setTimeout(() => setLoadingMsg(""), 10000);
@@ -171,6 +172,49 @@ Types de tâches possibles : arrosage, engrais, rempotage, taille, brumisation. 
   const urgentTasks = plants.flatMap(plant =>
     (plant.taches || []).map(task => ({ plant, task, next: getNextTaskDate(plant, task), daysLeft: Math.floor((getNextTaskDate(plant, task) - new Date()) / 86400000) }))
   ).filter(t => t.daysLeft <= 3).sort((a, b) => a.daysLeft - b.daysLeft);
+
+  const confirmPlant = () => {
+    setPlants(prev => [...prev, pendingPlant]);
+    setSelectedPlant(pendingPlant);
+    setPendingPlant(null);
+    setPreview(null); setImageData(null);
+    setView("plant");
+  };
+
+  const correctAndRetry = async () => {
+    if (!correction.trim()) return;
+    setLoading(true);
+    setLoadingMsg("🔄 Correction en cours…");
+    const now = new Date();
+    const seasonInfo = getSeason(now.getMonth(), location?.lat);
+    const locationStr = location ? `Latitude ${location.lat.toFixed(1)}, longitude ${location.lon.toFixed(1)}` : "Europe tempérée";
+    const prompt = `Tu es un expert en botanique et jardinage. L'utilisateur te dit que la plante est : "${correction}".
+Contexte : Localisation ${locationStr}, saison ${seasonInfo}, date ${now.toLocaleDateString("fr-FR")}.
+Génère le planning d'entretien adapté. Réponds UNIQUEMENT en JSON valide (sans backticks) :
+{"nom":"...","nom_latin":"...","emoji":"...","description":"...","luminosite":"...","humidite":"...","difficulte":"...","conseils_saison":"...","taches":[{"type":"arrosage","frequence_jours":7,"description":"...","mois_actifs":[1,2,3,4,5,6,7,8,9,10,11,12]}]}
+Types de tâches possibles : arrosage, engrais, rempotage, taille, brumisation. Adapte les fréquences à la saison et au climat local.`;
+    try {
+      const res = await fetch("https://api.anthropic.com/v1/messages", {
+        method: "POST",
+        headers: { "Content-Type": "application/json", "x-api-key": apiKey, "anthropic-version": "2023-06-01", "anthropic-dangerous-direct-browser-access": "true" },
+        body: JSON.stringify({
+          model: "claude-sonnet-4-6", max_tokens: 2048,
+          messages: [{ role: "user", content: prompt }]
+        })
+      });
+      const data = await res.json();
+      if (data.error) throw new Error(data.error.message);
+      const text = data.content?.find(b => b.type === "text")?.text || "";
+      const jsonMatch = text.match(/\{[\s\S]*\}/);
+      if (!jsonMatch) throw new Error("Réponse invalide");
+      const plantData = JSON.parse(jsonMatch[0]);
+      setPendingPlant({ ...pendingPlant, ...plantData });
+      setCorrection("");
+    } catch (err) {
+      setLoadingMsg("❌ " + err.message);
+      setTimeout(() => setLoadingMsg(""), 8000);
+    } finally { setLoading(false); }
+  };
 
   const getDaysInMonth = (y, m) => new Date(y, m + 1, 0).getDate();
   const getFirstDay = (y, m) => new Date(y, m, 1).getDay();
@@ -309,6 +353,37 @@ Types de tâches possibles : arrosage, engrais, rempotage, taille, brumisation. 
           </div>
         )}
         {loading && <div style={{ textAlign: "center", padding: "20px" }}><div style={{ fontSize: 36, animation: "spin 1s linear infinite", display: "inline-block" }}>🌿</div><div style={{ fontSize: 14, color: "#52a26e", marginTop: 12, fontWeight: 600 }}>{loadingMsg}</div></div>}
+
+        {/* Confirmation screen */}
+        {pendingPlant && !loading && (
+          <div style={{ background: "white", borderRadius: 20, padding: 20, border: "1px solid #d1fae5" }}>
+            <div style={{ textAlign: "center", marginBottom: 16 }}>
+              <div style={{ fontSize: 40 }}>{pendingPlant.emoji}</div>
+              <div style={{ fontFamily: "'Georgia', serif", fontSize: 20, fontWeight: 700, color: "#1a3a2a" }}>{pendingPlant.nom}</div>
+              <div style={{ fontSize: 12, color: "#86a892", fontStyle: "italic" }}>{pendingPlant.nom_latin}</div>
+              <div style={{ fontSize: 13, color: "#6b7280", marginTop: 8, lineHeight: 1.5 }}>{pendingPlant.description}</div>
+            </div>
+            <div style={{ fontWeight: 700, fontSize: 13, color: "#1a3a2a", marginBottom: 8, textAlign: "center" }}>C'est bien cette plante ?</div>
+            <button onClick={confirmPlant} style={{ width: "100%", background: "linear-gradient(135deg, #16a34a, #15803d)", color: "white", border: "none", borderRadius: 14, padding: "14px", fontSize: 15, fontWeight: 700, cursor: "pointer", marginBottom: 10 }}>
+              ✅ Oui, c'est ça !
+            </button>
+            <div style={{ display: "flex", gap: 8 }}>
+              <input
+                value={correction}
+                onChange={e => setCorrection(e.target.value)}
+                placeholder="Non, c'est un/une…"
+                style={{ flex: 1, border: "1px solid #d1fae5", borderRadius: 10, padding: "10px 12px", fontSize: 13, outline: "none" }}
+                onKeyDown={e => e.key === "Enter" && correctAndRetry()}
+              />
+              <button onClick={correctAndRetry} disabled={!correction.trim()} style={{ background: correction.trim() ? "#f0fdf4" : "#f3f4f6", color: correction.trim() ? "#16a34a" : "#9ca3af", border: "1px solid #d1fae5", borderRadius: 10, padding: "10px 14px", fontSize: 13, fontWeight: 700, cursor: correction.trim() ? "pointer" : "default" }}>
+                🔄
+              </button>
+            </div>
+            <button onClick={() => { setPendingPlant(null); setPreview(null); setImageData(null); }} style={{ width: "100%", background: "transparent", color: "#9ca3af", border: "none", padding: "10px", fontSize: 12, cursor: "pointer", marginTop: 6 }}>
+              Annuler
+            </button>
+          </div>
+        )}
       </div>
       <style>{`@keyframes spin { from { transform: rotate(0deg); } to { transform: rotate(360deg); } }`}</style>
     </div>
@@ -361,7 +436,8 @@ Types de tâches possibles : arrosage, engrais, rempotage, taille, brumisation. 
               </div>
             );
           })}
-          <button onClick={() => { setPlants(prev => prev.filter(pl => pl.id !== p.id)); setView("home"); }} style={{ width: "100%", marginTop: 16, background: "transparent", color: "#dc2626", border: "1px solid #fca5a5", borderRadius: 12, padding: "12px", fontSize: 13, cursor: "pointer" }}>🗑️ Supprimer cette plante</button>
+          <button onClick={() => setEditingPlant({ ...p })} style={{ width: "100%", marginTop: 12, background: "#f0fdf4", color: "#16a34a", border: "1px solid #bbf7d0", borderRadius: 12, padding: "12px", fontSize: 13, cursor: "pointer", fontWeight: 600 }}>✏️ Modifier les infos</button>
+          <button onClick={() => { setPlants(prev => prev.filter(pl => pl.id !== p.id)); setView("home"); }} style={{ width: "100%", marginTop: 10, background: "transparent", color: "#dc2626", border: "1px solid #fca5a5", borderRadius: 12, padding: "12px", fontSize: 13, cursor: "pointer" }}>🗑️ Supprimer cette plante</button>
         </div>
       </div>
     );
@@ -418,9 +494,63 @@ Types de tâches possibles : arrosage, engrais, rempotage, taille, brumisation. 
     );
   };
 
+  const saveEdit = () => {
+    setPlants(prev => prev.map(p => p.id === editingPlant.id ? { ...editingPlant } : p));
+    setSelectedPlant({ ...editingPlant });
+    setEditingPlant(null);
+  };
+
+  const EditModal = () => {
+    if (!editingPlant) return null;
+    const field = (label, key, multiline) => (
+      <div style={{ marginBottom: 14 }}>
+        <div style={{ fontSize: 12, fontWeight: 700, color: "#52a26e", marginBottom: 4 }}>{label}</div>
+        {multiline
+          ? <textarea value={editingPlant[key] || ""} onChange={e => setEditingPlant(prev => ({ ...prev, [key]: e.target.value }))}
+              style={{ width: "100%", border: "1px solid #d1fae5", borderRadius: 10, padding: "10px 12px", fontSize: 13, outline: "none", resize: "none", height: 70, fontFamily: "inherit" }} />
+          : <input value={editingPlant[key] || ""} onChange={e => setEditingPlant(prev => ({ ...prev, [key]: e.target.value }))}
+              style={{ width: "100%", border: "1px solid #d1fae5", borderRadius: 10, padding: "10px 12px", fontSize: 13, outline: "none" }} />
+        }
+      </div>
+    );
+    const taskField = (task, key, label, type = "text") => (
+      <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 6 }}>
+        <div style={{ fontSize: 12, color: "#6b7280", width: 90, flexShrink: 0 }}>{TASK_ICONS[task.type]} {label}</div>
+        <input type={type} value={task[key]} onChange={e => setEditingPlant(prev => ({
+          ...prev, taches: prev.taches.map(t => t.type === task.type ? { ...t, [key]: type === "number" ? parseInt(e.target.value) || 1 : e.target.value } : t)
+        }))} style={{ flex: 1, border: "1px solid #d1fae5", borderRadius: 8, padding: "6px 10px", fontSize: 13, outline: "none" }} />
+      </div>
+    );
+    return (
+      <div style={{ position: "fixed", inset: 0, background: "rgba(0,0,0,0.5)", zIndex: 200, overflowY: "auto", padding: "20px 16px" }}>
+        <div style={{ background: "white", borderRadius: 20, padding: 20, maxWidth: 430, margin: "0 auto" }}>
+          <div style={{ fontFamily: "'Georgia', serif", fontSize: 18, fontWeight: 700, color: "#1a3a2a", marginBottom: 16 }}>✏️ Modifier la plante</div>
+          {field("Nom commun", "nom")}
+          {field("Nom latin", "nom_latin")}
+          {field("Emoji", "emoji")}
+          {field("Description", "description", true)}
+          {field("Luminosité", "luminosite")}
+          {field("Humidité", "humidite")}
+          {field("Conseil de saison", "conseils_saison", true)}
+          {editingPlant.taches?.length > 0 && (
+            <div>
+              <div style={{ fontSize: 12, fontWeight: 700, color: "#52a26e", marginBottom: 8 }}>Fréquences (jours)</div>
+              {editingPlant.taches.map(task => taskField(task, "frequence_jours", task.type, "number"))}
+            </div>
+          )}
+          <div style={{ display: "flex", gap: 10, marginTop: 16 }}>
+            <button onClick={() => setEditingPlant(null)} style={{ flex: 1, background: "#f3f4f6", border: "none", borderRadius: 12, padding: 14, cursor: "pointer", fontSize: 14 }}>Annuler</button>
+            <button onClick={saveEdit} style={{ flex: 2, background: "linear-gradient(135deg, #16a34a, #15803d)", color: "white", border: "none", borderRadius: 12, padding: 14, cursor: "pointer", fontSize: 14, fontWeight: 700 }}>Sauvegarder</button>
+          </div>
+        </div>
+      </div>
+    );
+  };
+
   return (
     <div style={{ fontFamily: "'Helvetica Neue', sans-serif", maxWidth: 430, margin: "0 auto", background: "#f8faf8", minHeight: "100vh" }}>
       {showKeyInput && <KeyModal />}
+      {editingPlant && <EditModal />}
       {view === "home" && renderHome()}
       {view === "add" && renderAdd()}
       {view === "plant" && renderPlant()}
