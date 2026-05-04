@@ -62,18 +62,30 @@ export default function App() {
     reader.onload = (ev) => {
       const img = new Image();
       img.onload = () => {
-        const canvas = document.createElement("canvas");
-        const MAX = 1200;
+        // Version API : 1000px pour bonne reconnaissance
+        const API_MAX = 1000;
         let { width, height } = img;
-        if (width > MAX || height > MAX) {
-          if (width > height) { height = Math.round(height * MAX / width); width = MAX; }
-          else { width = Math.round(width * MAX / height); height = MAX; }
+        if (width > API_MAX || height > API_MAX) {
+          if (width > height) { height = Math.round(height * API_MAX / width); width = API_MAX; }
+          else { width = Math.round(width * API_MAX / height); height = API_MAX; }
         }
-        canvas.width = width; canvas.height = height;
-        canvas.getContext("2d").drawImage(img, 0, 0, width, height);
-        const compressed = canvas.toDataURL("image/jpeg", 0.8);
-        setPreview(compressed);
-        setImageData(compressed.split(",")[1]);
+        const apiCanvas = document.createElement("canvas");
+        apiCanvas.width = width; apiCanvas.height = height;
+        apiCanvas.getContext("2d").drawImage(img, 0, 0, width, height);
+        setImageData(apiCanvas.toDataURL("image/jpeg", 0.85).split(",")[1]);
+
+        // Version stockage : 400px très compressée pour économiser la mémoire
+        const STORE_MAX = 400;
+        let sw = img.width, sh = img.height;
+        if (sw > STORE_MAX || sh > STORE_MAX) {
+          if (sw > sh) { sh = Math.round(sh * STORE_MAX / sw); sw = STORE_MAX; }
+          else { sw = Math.round(sw * STORE_MAX / sh); sh = STORE_MAX; }
+        }
+        const storeCanvas = document.createElement("canvas");
+        storeCanvas.width = sw; storeCanvas.height = sh;
+        storeCanvas.getContext("2d").drawImage(img, 0, 0, sw, sh);
+        const thumbnail = storeCanvas.toDataURL("image/jpeg", 0.6);
+        setPreview(thumbnail);
       };
       img.src = ev.target.result;
     };
@@ -117,7 +129,7 @@ Types de tâches possibles : arrosage, engrais, rempotage, taille, brumisation. 
       const jsonMatch = text.match(/\{[\s\S]*\}/);
       if (!jsonMatch) throw new Error("Réponse reçue mais JSON introuvable : " + text.slice(0, 80));
       const plantData = JSON.parse(jsonMatch[0]);
-      const newPlant = { id: Date.now(), ...plantData, photo: `data:image/jpeg;base64,${imageData}`, ajoutee: now.toISOString(), derniere_action: {} };
+      const newPlant = { id: Date.now(), ...plantData, photo: preview, ajoutee: now.toISOString(), derniere_action: {} };
       setPlants(prev => [...prev, newPlant]);
       setSelectedPlant(newPlant);
       setView("plant");
@@ -138,8 +150,22 @@ Types de tâches possibles : arrosage, engrais, rempotage, taille, brumisation. 
 
   const markDone = (plantId, taskType) => {
     const now = new Date().toISOString();
-    setPlants(prev => prev.map(p => p.id !== plantId ? p : { ...p, derniere_action: { ...p.derniere_action, [taskType]: now } }));
-    setSelectedPlant(prev => prev?.id === plantId ? { ...prev, derniere_action: { ...prev.derniere_action, [taskType]: now } } : prev);
+    setPlants(prev => {
+      const updated = prev.map(p => p.id !== plantId ? p : { ...p, derniere_action: { ...p.derniere_action, [taskType]: now } });
+      // Sync selectedPlant avec la version à jour
+      const updatedPlant = updated.find(p => p.id === plantId);
+      if (updatedPlant) setSelectedPlant(updatedPlant);
+      return updated;
+    });
+  };
+
+  const deleteTask = (plantId, taskType) => {
+    setPlants(prev => {
+      const updated = prev.map(p => p.id !== plantId ? p : { ...p, taches: p.taches.filter(t => t.type !== taskType) });
+      const updatedPlant = updated.find(p => p.id === plantId);
+      if (updatedPlant) setSelectedPlant(updatedPlant);
+      return updated;
+    });
   };
 
   const urgentTasks = plants.flatMap(plant =>
@@ -328,7 +354,10 @@ Types de tâches possibles : arrosage, engrais, rempotage, taille, brumisation. 
                     <div style={{ fontSize: 10, color: "#9ca3af" }}>tous les {task.frequence_jours}j</div>
                   </div>
                 </div>
-                {isUrgent && <button onClick={() => markDone(p.id, task.type)} style={{ width: "100%", marginTop: 10, background: TASK_COLORS[task.type], color: "white", border: "none", borderRadius: 10, padding: "10px", fontSize: 13, fontWeight: 700, cursor: "pointer" }}>✓ Marquer comme fait</button>}
+                <div style={{ display: "flex", gap: 8, marginTop: 10 }}>
+                  <button onClick={() => markDone(p.id, task.type)} style={{ flex: 1, background: isUrgent ? TASK_COLORS[task.type] : "#f0faf3", color: isUrgent ? "white" : "#16a34a", border: isUrgent ? "none" : "1px solid #bbf7d0", borderRadius: 10, padding: "10px", fontSize: 13, fontWeight: 700, cursor: "pointer" }}>✓ Fait</button>
+                  <button onClick={() => { if(window.confirm("Supprimer la tâche " + task.type + " ?")) deleteTask(p.id, task.type); }} style={{ background: "#fef2f2", color: "#dc2626", border: "1px solid #fca5a5", borderRadius: 10, padding: "10px 14px", fontSize: 13, cursor: "pointer" }}>🗑️</button>
+                </div>
               </div>
             );
           })}
